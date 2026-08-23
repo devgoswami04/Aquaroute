@@ -1,0 +1,58 @@
+# AquaRoute configuration — all non-secret, tunable parameters live here.
+# Secrets (API keys) live in .env (see .env.example). Never hard-code either.
+
+project:
+  name: AquaRoute
+  crs: "EPSG:4326"          # storage CRS (lon/lat)
+  metric_crs: "EPSG:32644"  # UTM 44N — for length/area/DEM ops around Chennai
+
+# Study corridor: Chennai — Velachery / Pallikaranai / Tambaram
+# bbox order kept explicit to avoid the classic lat/lon swap bug.
+bbox:
+  south: 12.87
+  west: 80.10
+  north: 13.02
+  east: 80.25
+
+# Human place string used by OSMnx as a fallback / documentation.
+place: "Velachery, Chennai, Tamil Nadu, India"
+
+# Known historical flood events used for training / evaluation (SAR + reports).
+events:
+  - name: "2015 Chennai floods"
+    start: "2015-12-01"
+    end: "2015-12-05"
+  - name: "2021 Chennai floods"
+    start: "2021-11-06"
+    end: "2021-11-12"
+  - name: "2023 Cyclone Michaung"
+    start: "2023-12-03"
+    end: "2023-12-06"
+
+# Ingestion / API tuning
+ingestion:
+  forecast_hours: 24          # default forecast horizon
+  road_network_type: "drive"  # OSMnx network type
+  dem_resolution: "SRTMGL1"   # OpenTopography global DEM (30 m) — primary
+  dem_fallback_zoom: 12       # keyless AWS Terrain Tiles zoom when no OpenTopography key
+  cache_dir: "data"
+
+# Feature engineering
+features:
+  segment_max_len_m: 100      # split road edges into ~100 m analysis segments
+
+# Vehicle-class depth thresholds (metres) — used by routing (Module 6).
+vehicle_thresholds:
+  two_wheeler: 0.15
+  auto: 0.25
+  car: 0.30
+  bus: 0.60
+
+# Model hyperparameters (filled in as later phases land).
+model:
+  baseline: "xgboost"
+  frf:
+    temporal_encoder: "lstm"  # lstm | tcn
+    gnn: "graphsage"          # graphsage | gat
+    hidden_dim: 64
+    horizon_hours: 24

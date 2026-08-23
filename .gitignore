@@ -1,0 +1,32 @@
+# --- Secrets ---
+.env
+
+# --- Cached / large data (DEM, road graphs, SAR rasters) ---
+data/
+!data/.gitkeep
+cache/          # OSMnx HTTP response cache
+*.tif
+*.graphml
+*.geojson.gz
+
+# --- Python ---
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+.pytest_cache/
+.mypy_cache/
+.ipynb_checkpoints/
+
+# --- Node / frontend ---
+node_modules/
+frontend/dist/
+frontend/.vite/
+
+# --- MLflow / experiment tracking ---
+mlruns/
+
+# --- OS ---
+.DS_Store
+Thumbs.db
