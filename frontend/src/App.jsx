@@ -103,7 +103,7 @@ export default function App() {
               <option value="">— none —</option>
               {events.map((e) => (
                 <option key={e.name} value={e.name} disabled={!e.labelled}>
-                  {e.name}{e.labelled ? "" : " (no labels)"}
+                  {e.name}{e.labelled ? (e.label_source === "sar" ? " — real SAR" : " — synthetic") : " (no labels)"}
                 </option>
               ))}
             </select>
@@ -146,7 +146,7 @@ export default function App() {
   );
 }
 
-const sel = { fontSize: 13, padding: "2px 6px" };
+const sel = { fontSize: 13, padding: "3px 6px", color: "#111", background: "#fff", border: "1px solid #9bb0bd", borderRadius: 4 };
 
 function SegmentDetails({ p }) {
   const rows = [

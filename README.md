@@ -11,25 +11,30 @@ convert forecasts into vehicle-class-aware routing (a 15 cm road stops a
 two-wheeler but not a bus).
 
 This repo is being built **phase by phase** — see the build brief and §10 there.
-**Current state: complete — Phases 0–10 all done.** Ingestion → hydrology &
-features → flood labels → baseline → the novel Flood Response Function → live
-forecast API & map → closed-loop self-calibration → vehicle-aware routing → civic
-dashboard → full evaluation. See **[docs/EVALUATION.md](docs/EVALUATION.md)** for
-the §8 results and **[docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)** for the design.
+**Current state: complete — Phases 0–10 all done**, then upgraded with **real
+Sentinel-1 SAR ground truth** and a **flood-extent-grounded FRF**. Ingestion →
+hydrology & features → real-SAR flood labels → flood-propensity + the novel Flood
+Response Function → live forecast API & map → closed-loop self-calibration →
+vehicle-aware routing → civic dashboard → full evaluation. See
+**[docs/EVALUATION.md](docs/EVALUATION.md)** and **[docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)**.
 
-## Results at a glance (§8)
+## Results at a glance
 
-| Model | Event F1 (LOEO) | Depth RMSE | Onset MAE | Clearance MAE |
+Flood **extent** is grounded in **real Sentinel-1 SAR** (2015 & 2021 events, keyless
+via Microsoft Planetary Computer): an XGBoost flood-propensity model that, held out
+(train one real event → predict the other), reaches **ROC-AUC 0.78**. The Flood
+Response Function reconstructs depth = MAX_DEPTH · propensity · shape, ranking flood
+risk against real SAR **and** adding depth-vs-time timing:
+
+| Real Sentinel-1 event | FRF ROC-AUC | Depth RMSE | Onset MAE | Clearance MAE |
 |---|---|---|---|---|
-| XGBoost baseline | 0.74 | — (no depth) | — (no timing) | — (no timing) |
-| RandomForest baseline | 0.80 | — | — | — |
-| **Flood Response Function** | 0.69 | **0.07 m** | **1.0 h** | **3.8 h** |
+| 2015 Chennai floods | **0.93** | 0.019 m | 3.1 h | 2.5 h |
+| 2021 Chennai floods | **0.93** | 0.020 m | 4.9 h | 0.6 h |
 
-The FRF matches the baseline's classification while adding the depth-vs-time
-timing the baseline structurally cannot produce. Self-calibration retires a
-repaired road's flood prediction within **~1 event**; safe routing cuts flood
-exposure from ~8 km (shortest) to ~1 km for a two-wheeler, and a bus finds a
-fully-passable route where a two-wheeler cannot. Regenerate everything with:
+GAT ≈ GraphSAGE (AUC 0.811 vs 0.811). Self-calibration retires a repaired road's
+flood prediction within **~1 event**; safe routing cuts flood exposure from ~8 km
+(shortest) to ~1 km for a two-wheeler, and a bus finds a fully-passable route where
+a two-wheeler cannot. Regenerate everything with:
 
 ```bash
 python -m aquaroute.eval.report

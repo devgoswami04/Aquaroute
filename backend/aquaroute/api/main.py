@@ -6,12 +6,50 @@ any data work. Later phases mount the /segments, /predict, /route, /report,
 """
 from __future__ import annotations
 
+import threading
+from contextlib import asynccontextmanager
+
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 
 from aquaroute import __version__
 from aquaroute.config import get_config
+
+# Warm-up state, so /health can report readiness while caches load.
+_WARM = {"segments": False, "forecast": False, "routing": False}
+
+
+def _warm_caches() -> None:
+    """Pre-load the heavy caches (segments, FRF model, routing graph) in the
+    background at startup, so the first user request isn't a 15–45 s cold start.
+    Each step imports lazily and swallows errors (e.g. no FRF model yet)."""
+    try:
+        from aquaroute.db.segments_store import load_segments_gdf
+        load_segments_gdf()
+        _WARM["segments"] = True
+    except Exception:
+        pass
+    try:
+        from aquaroute.model.predictor import get_predictor
+        p = get_predictor()
+        p.predict_current("live")
+        p.predict_current("2021_chennai_floods")   # the vivid replay demo
+        _WARM["forecast"] = True
+    except Exception:
+        pass
+    try:
+        from aquaroute.routing import get_router
+        get_router("2021_chennai_floods")           # routing-panel default scenario
+        _WARM["routing"] = True
+    except Exception:
+        pass
+
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    threading.Thread(target=_warm_caches, name="aquaroute-warm", daemon=True).start()
+    yield
 
 
 class FeedRecords(BaseModel):
@@ -45,6 +83,7 @@ app = FastAPI(
     title="AquaRoute API",
     version=__version__,
     summary="Predictive urban-flood forecasting + vehicle-aware safe routing.",
+    lifespan=lifespan,
 )
 
 # Allow the Vite dev server to call the API during development.
@@ -71,6 +110,7 @@ def health() -> dict:
             "east": cfg.bbox.east,
         },
         "events": [e["name"] for e in cfg.events],
+        "warm": dict(_WARM),
     }
 
 
@@ -153,15 +193,19 @@ def segment_curve(segment_id: str, scenario: str = "live") -> dict:
 @app.get("/events")
 def events() -> list:
     """Configured historical events + whether flood labels have been built."""
-    from aquaroute.labels.store import list_labelled_events, slug
+    from aquaroute.labels.store import dominant_source, list_labelled_events, slug
 
     cfg = get_config()
     labelled = set(list_labelled_events())
-    return [
-        {"name": e["name"], "start": e["start"], "end": e["end"],
-         "labelled": slug(e["name"]) in labelled}
-        for e in cfg.events
-    ]
+    out = []
+    for e in cfg.events:
+        is_labelled = slug(e["name"]) in labelled
+        out.append({
+            "name": e["name"], "start": e["start"], "end": e["end"],
+            "labelled": is_labelled,
+            "label_source": dominant_source(e["name"]) if is_labelled else None,
+        })
+    return out
 
 
 @app.get("/labels")

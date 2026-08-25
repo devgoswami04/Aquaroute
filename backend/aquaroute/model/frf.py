@@ -69,7 +69,7 @@ class FloodResponseFunction(nn.Module):
         z = F.relu(self.gnn2(z, edge_index))     # [N, hidden]
         e_b = e.unsqueeze(0).expand(z.size(0), -1)
         out = self.decoder(torch.cat([z, e_b], dim=1))  # [N, T]
-        return F.softplus(out)                   # depths >= 0
+        return torch.sigmoid(out)                # normalised temporal shape in [0,1]
 
 
 @torch.no_grad()

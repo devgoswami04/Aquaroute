@@ -63,6 +63,16 @@ def list_labelled_events() -> list[str]:
     return sorted(p.stem for p in _labels_dir().glob("*.parquet"))
 
 
+def dominant_source(event: str) -> str:
+    """The event's label provenance: 'sar' (real Sentinel-1) or 'synthetic'."""
+    try:
+        df = load_labels(slug(event))
+    except FileNotFoundError:
+        return "none"
+    non_report = df[df["source"] != "report"]["source"]
+    return str(non_report.mode().iloc[0]) if len(non_report) else "unknown"
+
+
 def load_labels_geojson(event: str, classes: list[str] | None = None,
                         only_flooded: bool = True, precision: int = 5) -> dict:
     """Join labels to segment geometry for the map overlay."""

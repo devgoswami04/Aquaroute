@@ -77,19 +77,30 @@ def _norm(a: np.ndarray) -> np.ndarray:
     return np.nan_to_num(np.clip((a - lo) / (hi - lo), 0, 1))
 
 
-def segment_reservoir_params(feats: pd.DataFrame) -> dict:
-    """Static per-segment reservoir coefficients derived from terrain/surface."""
+def segment_reservoir_params(feats: pd.DataFrame, propensity=None) -> dict:
+    """Static per-segment reservoir coefficients derived from terrain/surface.
+
+    ``propensity`` (per-segment flood probability learned from real SAR) grounds
+    the peak-depth gate in observed flooding when supplied; otherwise the gate
+    falls back to a terrain susceptibility heuristic.
+    """
     imperv = np.nan_to_num(feats["imperviousness"].fillna(0.6).to_numpy(), nan=0.6)
     up = _norm(feats["upstream_area"].to_numpy())
     depr = _norm(feats["depression_depth"].to_numpy())
     slope = _norm(feats["slope"].to_numpy())
-    sus = _norm(feats["susceptibility"].to_numpy()) if "susceptibility" in feats else \
-        np.clip(0.4 * _norm(feats["twi"].to_numpy()) + 0.6 * depr, 0, 1)
+
+    if propensity is not None:
+        # Real-SAR-grounded gate: flood extent matches observed (calibrated prob).
+        gate = 0.9 * np.clip(np.asarray(propensity, dtype="float64"), 0.0, 1.0)
+    else:
+        sus = _norm(feats["susceptibility"].to_numpy()) if "susceptibility" in feats else \
+            np.clip(0.4 * _norm(feats["twi"].to_numpy()) + 0.6 * depr, 0, 1)
+        gate = 0.9 * (sus ** 1.3)
     return {
         "coeff": 0.3 + 0.7 * imperv,                 # runoff coefficient
         "upboost": 1.0 + 0.5 * up,                    # upstream contribution
         "k": np.clip(0.5 - 0.35 * depr - 0.10 * (1 - slope), 0.08, 0.5),  # recession/h
-        "sus_gate": 0.9 * (sus ** 1.3),               # peak-depth gate (0..0.9)
+        "sus_gate": gate,                             # peak-depth gate (0..0.9)
     }
 
 
@@ -106,6 +117,28 @@ def depth_from_storm(params: dict, hyeto: np.ndarray) -> np.ndarray:
         S = np.maximum(S + coeff * upboost * float(hyeto[t]) - k * S, 0.0)
         depth[:, t] = MAX_DEPTH_M * gate * np.tanh(S / S_REF)
     return np.nan_to_num(depth)
+
+
+def storm_shape(params: dict, hyeto: np.ndarray) -> np.ndarray:
+    """[N, T] **normalised temporal shape** (peak 1 per segment) of the flood
+    response — the *timing* only, independent of amplitude/extent.
+
+    This is what the Flood Response Function learns: dense (every rained-on
+    segment has a shape), so training is stable. The flood *extent/magnitude* is
+    supplied separately by the real-SAR flood propensity at inference:
+        depth = MAX_DEPTH_M · propensity · shape
+    """
+    T = len(hyeto)
+    coeff, upboost, k = params["coeff"], params["upboost"], params["k"]
+    N = len(coeff)
+    S = np.zeros(N)
+    resp = np.zeros((N, T), dtype="float64")
+    for t in range(T):
+        S = np.maximum(S + coeff * upboost * float(hyeto[t]) - k * S, 0.0)
+        resp[:, t] = np.tanh(S / S_REF)
+    peak = resp.max(axis=1, keepdims=True)
+    shape = np.divide(resp, peak, out=np.zeros_like(resp), where=peak > 1e-6)
+    return np.nan_to_num(shape).astype("float32")
 
 
 def synthesize_depth_curves(feats: pd.DataFrame, hyeto: np.ndarray) -> np.ndarray:

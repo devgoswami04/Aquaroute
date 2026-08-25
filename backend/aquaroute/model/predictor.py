@@ -102,6 +102,9 @@ class Predictor:
         self.ids = ids
         self.gdf = gdf
         self.id_to_idx = {sid: i for i, sid in enumerate(ids)}
+        # Real-SAR flood propensity (extent), aligned to this graph's id order.
+        ck_prop = dict(zip(ck.get("ids", ids), ck.get("propensity", np.full(len(ids), 0.3))))
+        self.propensity = np.array([ck_prop.get(sid, 0.0) for sid in ids], dtype="float32")
         self._cache = {}  # scenario -> {depth, events, hyeto}
         self._loaded = True
 
@@ -125,8 +128,11 @@ class Predictor:
             return self._cache[scenario]
         from aquaroute.model.frf import predict_all
 
+        from aquaroute.model.frf_targets import MAX_DEPTH_M
         hyeto = self._hyeto_for(scenario)
-        depth = predict_all(self.model, self.node_x, self.edge_index, hyeto)
+        shape = predict_all(self.model, self.node_x, self.edge_index, hyeto)
+        # depth = MAX_DEPTH · propensity(real SAR extent) · shape(FRF timing)
+        depth = MAX_DEPTH_M * self.propensity[:, None] * shape
         # Low-rainfall damping: the FRF is trained on 0–300 mm storms and is
         # uncalibrated at the extreme low end (a ~2 mm forecast should flood
         # nothing, per the reservoir physics). Scale depths by a smooth gate that

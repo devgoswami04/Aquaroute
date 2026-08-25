@@ -36,9 +36,14 @@ pyarrow>=15.0            # GeoParquet segment store (fast reads)
 pysheds>=0.3
 richdem>=2.3; platform_system != "Windows"   # optional; wheels flaky on Windows
 
-# --- Ground truth (Phase 3) ---
-earthengine-api>=0.1.390
+# --- Ground truth (Phase 3): real Sentinel-1 SAR flood masks ---
+# Planetary Computer path is keyless (anonymous signed reads); GEE needs an account.
 pystac-client>=0.7
+planetary-computer>=1.0
+odc-stac>=0.3
+rioxarray>=0.15
+scipy>=1.11                # speckle filter / morphology for SAR change detection
+earthengine-api>=0.1.390   # optional GEE fallback (needs `earthengine authenticate`)
 
 # --- Baseline + core model (Phase 4–5) ---
 scikit-learn>=1.4

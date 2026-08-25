@@ -22,7 +22,7 @@ def test_md_table():
                     reason="eval report not generated (run `make eval`)")
 def test_eval_artifacts_present():
     figs = REPO / "docs" / "figures"
-    for f in ["01_baseline_vs_frf.png", "02_frf_per_event.png",
+    for f in ["01_grounding.png", "02_frf_per_event.png",
               "03_self_calibration.png", "04_routing_regret.png"]:
         assert (figs / f).exists() and (figs / f).stat().st_size > 1000
     assert "Evaluation" in (REPO / "docs" / "EVALUATION.md").read_text(encoding="utf-8")

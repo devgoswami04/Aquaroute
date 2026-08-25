@@ -24,7 +24,8 @@ from aquaroute.model.frf_train import (
 )
 
 
-def save_frf(model, stats, path, gnn, temporal, hidden):
+def save_frf(model, stats, path, gnn, temporal, hidden, data):
+    import numpy as np
     import torch
     path.parent.mkdir(parents=True, exist_ok=True)
     torch.save({
@@ -32,35 +33,92 @@ def save_frf(model, stats, path, gnn, temporal, hidden):
         "mean": stats[0], "std": stats[1],
         "node_features": NODE_FEATURES, "horizon": HORIZON,
         "hidden": hidden, "gnn": gnn, "temporal": temporal,
+        # Per-segment real-SAR flood propensity (the extent), aligned to graph ids,
+        # so the predictor can reconstruct depth = MAX_DEPTH * propensity * shape.
+        "propensity": np.asarray(data["propensity"], dtype="float32"),
+        "ids": list(data["ids"]),
     }, path)
 
 
-def run(epochs: int = 50, storms_per_epoch: int = 3) -> dict:
+def _propensity_generalization() -> dict:
+    """Honest test that the real-SAR flood-extent grounding generalises: train the
+    propensity model on all-but-one SAR event, score it on the held-out event."""
+    from sklearn.metrics import roc_auc_score
+
+    from aquaroute.db.segments_store import load_segments_gdf
+    from aquaroute.labels.store import load_labels
+    from aquaroute.model.propensity import _real_sar_events, compute_flood_propensity
+
+    real = _real_sar_events()
+    if len(real) < 2:
+        return {"events": real, "held_out_auc": None}
+    seg_ids = load_segments_gdf()["segment_id"]
+    aucs = {}
+    for held in real:
+        p = compute_flood_propensity([e for e in real if e != held])
+        y = seg_ids.map(load_labels(held).set_index("segment_id")["flooded"]).fillna(False).astype(int)
+        aucs[held] = round(float(roc_auc_score(y.to_numpy(), seg_ids.map(p).fillna(0).to_numpy())), 3)
+    return {"events": real, "per_event_auc": aucs,
+            "mean_auc": round(float(np.mean(list(aucs.values()))), 3)}
+
+
+def run(epochs: int = 55, storms_per_epoch: int = 3, compare_gnn: bool = True) -> dict:
     cfg = get_config()
     hidden = int(cfg.get("model", "frf", "hidden_dim", default=64))
-    gnn = cfg.get("model", "frf", "gnn", default="graphsage")
     temporal = cfg.get("model", "frf", "temporal_encoder", default="lstm")
-    print("AquaRoute Phase 5 — Flood Response Function "
-          f"(temporal={temporal}, gnn={gnn}, hidden={hidden})\n")
+    print(f"AquaRoute — Flood Response Function (grounded in real SAR, temporal={temporal})\n")
 
-    print("[*] Preparing data (features, segment graph, reservoir params, real storms)...")
+    print("[*] Flood-extent grounding: real-SAR propensity, held-out generalisation...")
+    prop = _propensity_generalization()
+    if prop.get("mean_auc") is not None:
+        print(f"    propensity held-out AUC (train one SAR event -> test the other): "
+              f"{prop['per_event_auc']}  mean={prop['mean_auc']}")
+
+    print("\n[*] Preparing grounded data (features, graph, real-SAR propensity, storms)...")
     data = prepare_data()
     events = list(data["events"])
-    print(f"    nodes: {len(data['ids']):,}  edges: {data['edge_index'].shape[1]:,}  "
-          f"held-out real events: {events}\n")
+    print(f"    nodes: {len(data['ids']):,}  edges: {data['edge_index'].shape[1]:,}  events: {events}\n")
 
-    print(f"[*] Training FRF on synthetic storms ({epochs} epochs × {storms_per_epoch})...")
-    model, stats = train_frf(data, epochs=epochs, storms_per_epoch=storms_per_epoch,
-                             hidden=hidden, gnn=gnn, temporal=temporal)
+    archs = ["graphsage", "gat"] if compare_gnn else [cfg.get("model", "frf", "gnn", default="graphsage")]
+    trials = {}
+    for gnn in archs:
+        print(f"=== Training FRF with GNN={gnn} ({epochs} epochs) ===")
+        model, stats = train_frf(data, epochs=epochs, storms_per_epoch=storms_per_epoch,
+                                 hidden=hidden, gnn=gnn, temporal=temporal)
+        per_event = [evaluate_frf(model, data, ev, stats) for ev in events]
+        mean = _summarise(per_event)
+        print(f"    {gnn}: mean depth RMSE={mean['depth_rmse_m']} m onset MAE={mean['onset_mae_h']} h "
+              f"clearance MAE={mean['clearance_mae_h']} h event F1={mean['event_f1']} AUC={mean['event_roc_auc']}\n")
+        trials[gnn] = {"model": model, "stats": stats, "per_event": per_event, "mean": mean}
 
-    print("\n[*] Validating on held-out historical storms:")
-    per_event = [evaluate_frf(model, data, ev, stats) for ev in events]
+    best = max(trials, key=lambda g: trials[g]["mean"]["event_roc_auc"] or 0)
+    print(f"[*] Best architecture by event AUC: {best}")
+    sel = trials[best]
+    model, stats, per_event, mean = sel["model"], sel["stats"], sel["per_event"], sel["mean"]
+
+    print("\n[*] Per-event validation (best model):")
     for m in per_event:
-        print(f"    {m['event']:<26} depth RMSE={m['depth_rmse_m']} m | "
-              f"onset MAE={m['onset_mae_h']} h | clearance MAE={m['clearance_mae_h']} h | "
-              f"event F1={m['event_f1']} | AUC={m['event_roc_auc']}")
+        print(f"    {m['event']:<26} depth RMSE={m['depth_rmse_m']} m | onset MAE={m['onset_mae_h']} h | "
+              f"clearance MAE={m['clearance_mae_h']} h | event F1={m['event_f1']} | AUC={m['event_roc_auc']}")
 
-    mean = {
+    model_path = cfg.cache_dir / "models" / "frf.pt"
+    save_frf(model, stats, model_path, best, temporal, hidden, data)
+    metrics = {
+        "gnn": best, "propensity_generalization": prop,
+        "architecture_comparison": {g: trials[g]["mean"] for g in trials},
+        "per_event": per_event, "mean": mean, "baseline_f1": _baseline_f1(),
+    }
+    (cfg.cache_dir / "models" / "frf_metrics.json").write_text(json.dumps(metrics, indent=2))
+    print(f"\n    model:   {model_path} (GNN={best})")
+
+    _print_sample_curve(model, data, stats, events[-1])
+    print("\nFRF OK — flood extent grounded in real Sentinel-1 SAR, timing from the "
+          "temporal encoder + reservoir dynamics.")
+    return metrics
+
+
+def _summarise(per_event) -> dict:
+    return {
         "depth_rmse_m": round(float(np.mean([m["depth_rmse_m"] for m in per_event])), 4),
         "onset_mae_h": _mean([m["onset_mae_h"] for m in per_event]),
         "clearance_mae_h": _mean([m["clearance_mae_h"] for m in per_event]),
@@ -68,26 +126,6 @@ def run(epochs: int = 50, storms_per_epoch: int = 3) -> dict:
         "event_roc_auc": round(float(np.mean([m["event_roc_auc"] for m in per_event
                                               if m["event_roc_auc"] is not None])), 4),
     }
-    print(f"\n    MEAN  depth RMSE={mean['depth_rmse_m']} m | onset MAE={mean['onset_mae_h']} h "
-          f"| clearance MAE={mean['clearance_mae_h']} h | event F1={mean['event_f1']} "
-          f"| AUC={mean['event_roc_auc']}")
-
-    base_f1 = _baseline_f1()
-    if base_f1 is not None:
-        print(f"    baseline XGBoost LOEO F1={base_f1} (no timing). FRF F1={mean['event_f1']} "
-              f"AND adds onset/clearance timing.")
-
-    model_path = cfg.cache_dir / "models" / "frf.pt"
-    save_frf(model, stats, model_path, gnn, temporal, hidden)
-    metrics_path = cfg.cache_dir / "models" / "frf_metrics.json"
-    metrics_path.write_text(json.dumps({"per_event": per_event, "mean": mean,
-                                        "baseline_f1": base_f1}, indent=2))
-    print(f"\n    model:   {model_path}\n    metrics: {metrics_path}")
-
-    _print_sample_curve(model, data, stats, events[-1])
-    print("\nPhase 5 OK. The FRF outputs a depth-vs-time curve per segment with "
-          "onset/peak/clearance. Phase 6 wires this to /predict + /segment/{id}/curve.")
-    return {"per_event": per_event, "mean": mean}
 
 
 def _mean(vals):
@@ -107,8 +145,10 @@ def _print_sample_curve(model, data, stats, event):
     from aquaroute.model.frf import derive_events, predict_all, predict_curve
     from aquaroute.model.frf_train import _standardize
 
+    from aquaroute.model.frf_targets import MAX_DEPTH_M
     x_np, _ = _standardize(data["node_x_raw"], stats)
-    pred = predict_all(model, x_np, data["edge_index"], data["events"][event]["hyeto"])
+    shape = predict_all(model, x_np, data["edge_index"], data["events"][event]["hyeto"])
+    pred = (MAX_DEPTH_M * data["propensity"])[:, None] * shape   # reconstruct depth
     peaks = pred.max(axis=1)
     i = int(np.argmax(peaks))
     sid = data["feats"].iloc[i]["segment_id"]

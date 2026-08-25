@@ -48,29 +48,31 @@ def run() -> list:
     cfg = get_config()
     print("AquaRoute Phase 3 — flood labelling\n")
 
+    from aquaroute.ingestion.sar import SarUnavailable, fetch_sar_flood_mask
+
     dem = fetch_dem()
     print("[*] Conditioning DEM for depth proxy / synthetic masks...")
     layers = condition_dem(dem)
     segments = load_segments_gdf()
-    use_ee = _ee_available()
-    print(f"[*] SAR source: {'Google Earth Engine (Sentinel-1)' if use_ee else 'SYNTHETIC fallback'}")
+    print("[*] SAR: real Sentinel-1 (Planetary Computer, keyless) per event; "
+          "synthetic fallback where no scene covers the flood.\n")
 
     summaries = []
     for ev in cfg.events:
         name = ev["name"]
-        mid = _mid_date(ev["start"], ev["end"])
         total_mm = _event_total_mm(ev["start"], ev["end"])
         sev = severity_from_rainfall(total_mm)
-        print(f"\n== {name}  (rain~{total_mm:.0f}mm, flood-fraction~{sev:.2f}) ==")
+        print(f"== {name}  (rain~{total_mm:.0f}mm) ==")
 
-        if use_ee:
-            from aquaroute.ingestion.sar import fetch_sar_flood_mask
-            mask = fetch_sar_flood_mask(mid)
+        try:
+            mask = fetch_sar_flood_mask(ev["start"], ev["end"])
             source = "sar"
-        else:
+            print(f"   real Sentinel-1 SAR mask: {mask.name}")
+        except SarUnavailable as e:
             mask = cfg.cache_dir / f"synmask_{slug(name)}.tif"
             synthesize_sar_mask(name, layers, mask, sev)
             source = "synthetic"
+            print(f"   no SAR scene ({e}); using synthetic mask")
 
         labels = label_event_from_sar(mask, segments, layers, source=source)
         reports = synthetic_citizen_reports(segments, name)
